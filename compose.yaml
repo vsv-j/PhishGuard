@@ -1,0 +1,126 @@
+services:
+  postgres:
+    image: 'postgres:16-alpine'
+    platform: linux/amd64
+    ports:
+      - '5432:5432'
+    environment:
+      - 'POSTGRES_DB=phishguard_db'
+      - 'POSTGRES_PASSWORD=${POSTGRES_PASSWORD}'
+      - 'POSTGRES_USER=${POSTGRES_USER}'
+    command: postgres -c wal_level=logical
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d phishguard_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: zookeeper:3.9.3
+    platform: linux/amd64
+    ports:
+      - '2181:2181'
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+
+  kafka:
+    image: 'bitnami/kafka:3.7'
+    platform: linux/amd64
+    ports:
+      - '9093:9093'
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9093
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    depends_on:
+      - zookeeper
+
+  kafka-connect:
+    image: 'debezium/connect:2.6.2.Final'
+    platform: linux/amd64
+    ports:
+      - '8083:8083'
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - GROUP_ID=phishguard-connect-cluster
+      - CONFIG_STORAGE_TOPIC=phishguard_connect_configs
+      - OFFSET_STORAGE_TOPIC=phishguard_connect_offsets
+      - STATUS_STORAGE_TOPIC=phishguard_connect_status
+      - CONNECT_PLUGIN_PATH=/kafka/connect
+      - CONNECT_SESSION_TIMEOUT_MS=180000
+      # --- ENABLE THE ENVIRONMENT VARIABLE CONFIG PROVIDER ---
+      - CONNECT_CONFIG_PROVIDERS=env
+      - CONNECT_CONFIG_PROVIDERS_ENV_CLASS=org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      # --- SECRETS FOR DEBEZIUM CONNECTOR (from .env file) ---
+      - CONNECT_DATABASE_USER=${POSTGRES_USER}
+      - CONNECT_DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+    depends_on:
+      - kafka
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  debezium-connector-setup:
+    image: curlimages/curl:8.5.0
+    platform: linux/amd64
+    volumes:
+      - ./debezium:/debezium/
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Waiting for Kafka Connect to be available...'
+        echo 'Checking if connector phishguard-outbox-connector already exists...'
+        STATUS_CODE=$$(curl -s -o /dev/null -w '%{http_code}' http://kafka-connect:8083/connectors/phishguard-outbox-connector)
+        if [ $$STATUS_CODE -eq 200 ]; then
+          echo 'Connector already exists. Nothing to do.'
+          exit 0
+        elif [ $$STATUS_CODE -eq 404 ]; then
+          echo 'Connector does not exist. Creating it...'
+          curl -i -X POST -H 'Accept:application/json' -H 'Content-Type:application/json' http://kafka-connect:8083/connectors/ -d @/debezium/register-postgres-connector.json
+          echo 'Connector created.'
+          exit 0
+        else
+          echo 'Error checking connector status. Received status code:' $$STATUS_CODE
+          exit 1
+        fi
+      "
+    restart: on-failure
+
+  phishguard-app:
+    build: .
+    platform: linux/amd64
+    ports:
+      - "8080:8080"
+      - "5005:5005"
+    environment:
+      - JAVA_TOOL_OPTIONS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
+      # --- DATABASE CREDENTIALS (from .env file) ---
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/phishguard_db
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=validate
+      # --- LIQUIBASE CONFIGURATION ---
+      - SPRING_LIQUIBASE_ENABLED=true
+      - SPRING_LIQUIBASE_CHANGE_LOG=classpath:db/changelog/db.changelog-master.xml
+      # --- KAFKA CONFIGURATION ---
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      # --- APPLICATION SECRETS (from .env file) ---
+      - PHISHGUARD_ENCRYPTION_KEY=${PHISHGUARD_ENCRYPTION_KEY}
+      - PHISHGUARD_SECURITY_API_KEY=${PHISHGUARD_SECURITY_API_KEY}
+      - PHISHGUARD_SERVICE_PHONE_NUMBER=${PHISHGUARD_SERVICE_PHONE_NUMBER}
+      - GOOGLE_WEBRISK_API_KEY=${GOOGLE_WEBRISK_API_KEY}
+      - GOOGLE_WEBRISK_BASE_URL=${GOOGLE_WEBRISK_BASE_URL:-https://webrisk.googleapis.com/v1eap1}
+      - GOOGLE_WEBRISK_THREAT_THRESHOLD_LEVEL=${GOOGLE_WEBRISK_THREAT_THRESHOLD_LEVEL:-HIGH}
+      - GOOGLE_WEBRISK_CONNECT_TIMEOUT_SECONDS=${GOOGLE_WEBRISK_CONNECT_TIMEOUT_SECONDS:-1}
+      - GOOGLE_WEBRISK_READ_TIMEOUT_SECONDS=${GOOGLE_WEBRISK_READ_TIMEOUT_SECONDS:-2}
+    depends_on:
+      - postgres
+      - kafka-connect
