@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+  xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                      http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+  <changeSet id="6-create-outbox-events-table" author="phishguard-dev">
+    <comment>Creates the outbox_events table for the Transactional Outbox Pattern.</comment>
+    <createTable tableName="outbox_events">
+      <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+        <constraints primaryKey="true" nullable="false"/>
+      </column>
+      <column name="topic" type="VARCHAR(255)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="payload" type="TEXT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="CURRENT_TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+
+    <createIndex indexName="idx_outbox_events_created_at" tableName="outbox_events">
+      <column name="created_at"/>
+    </createIndex>
+    <rollback>
+      <dropTable tableName="outbox_events"/>
+    </rollback>
+  </changeSet>
+
+</databaseChangeLog>

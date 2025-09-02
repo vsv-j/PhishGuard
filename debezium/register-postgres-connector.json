@@ -1,0 +1,27 @@
+{
+  "name": "phishguard-outbox-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+
+    "config.providers": "env",
+    "config.providers.env.class": "org.apache.kafka.common.config.provider.EnvVarConfigProvider",
+
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "${env:CONNECT_DATABASE_USER}",
+    "database.password": "${env:CONNECT_DATABASE_PASSWORD}",
+    "database.dbname": "phishguard_db",
+    "topic.prefix": "phishguard_db_server",
+    "plugin.name": "pgoutput",
+    "snapshot.mode": "always",
+    "table.include.list": "public.outbox_events",
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.route.by.field": "topic",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.table.field.event.key": "id",
+    "transforms.outbox.route.topic.replacement": "${routedByValue}",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.storage.StringConverter"
+  }
+}
